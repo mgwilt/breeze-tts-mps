@@ -7,9 +7,8 @@ from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoTokenizer
-
 from models.breeze import BreezeForConditionalGeneration
+from transformers import AutoConfig, AutoTokenizer
 
 
 def get_dist_info() -> tuple[int, int, int]:
@@ -26,6 +25,8 @@ def resolve_device(explicit_device: str | None = None) -> str:
     _, _, local_rank = get_dist_info()
     if torch.cuda.is_available():
         return f"cuda:{local_rank}"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -65,6 +66,15 @@ def update_generation_config_for_breeze(
     vars(model.generation_config).update(generation_config)
 
 
+def load_model_config(ckpt_dir: Path, *, attn_implementation: str) -> Any:
+    """Load Breeze config while applying attention choice to the nested encoder."""
+    config = AutoConfig.from_pretrained(ckpt_dir)
+    text_encoder_config = getattr(config, "text_encoder_config", None)
+    if text_encoder_config is not None:
+        text_encoder_config.preferred_attn_implementation = attn_implementation
+    return config
+
+
 def load_runtime(
     ckpt_dir: Path,
     *,
@@ -84,8 +94,10 @@ def load_runtime(
                 f"device_count={torch.cuda.device_count()}"
             ) from exc
     tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
+    config = load_model_config(ckpt_dir, attn_implementation=attn_implementation)
     model = BreezeForConditionalGeneration.from_pretrained(
         ckpt_dir,
+        config=config,
         dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
     )

@@ -11,6 +11,12 @@
 > [!IMPORTANT]
 > Source code is licensed under Apache 2.0. Breeze TTS 2 model weights, derivative models, and self-hosted outputs are for research and non-commercial use only. See [License](#license-and-responsible-use).
 
+> [!NOTE]
+> This `mgwilt/breeze-tts-mps` fork preserves the official CUDA path and adds a
+> portable eager PyTorch runtime for Apple Silicon MPS and CPU. Non-CUDA output
+> is generated before it is divided into HTTP response chunks, so this path is
+> functional but not realtime.
+
 ## 📰 News
 
 - **[2026.08.25]** 🎉 We open-source [Breeze TTS 2](https://huggingface.co/BreezeBlue/breeze-tts-2) model weights and the [PyTorch inference code](https://github.com/breezeblue-ai/breeze-tts).
@@ -159,6 +165,20 @@ curl -X POST http://127.0.0.1:7860/v1/audio/speech \
 ```
 
 The response is streaming mono 24 kHz signed 16-bit little-endian PCM. Start the API with `--fast-all` to enable the fast path.
+
+#### Apple Silicon MPS
+
+On a Mac with an MPS-enabled PyTorch build, start the portable eager API with:
+
+```bash
+python -m breeze_infer.api ../breeze-tts-2 \
+  --host 127.0.0.1 --port 7860 --device mps
+```
+
+The API automatically selects MPS when CUDA is unavailable, so `--device mps`
+is optional. CUDA graph acceleration and true incremental audio streaming remain
+CUDA-only. Bind the MPS API to loopback unless you provide a separate trusted,
+authenticated network edge.
 
 ### ⚡ Fast Inference Options
 

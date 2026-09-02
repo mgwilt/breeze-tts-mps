@@ -14,7 +14,10 @@ from pathlib import Path
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from models.fast_streaming import FastBreezeStreamingRuntime, FastStreamingConfig
+from models.warmup_profile import load_warmup_profile
 
+from breeze_infer.eager_runtime import EagerBreezeStreamingRuntime
 from breeze_infer.runtime import (
     load_runtime,
     resolve_device,
@@ -22,8 +25,6 @@ from breeze_infer.runtime import (
     update_generation_config_for_breeze,
 )
 from breeze_infer.templates import get_template, prepare_inputs
-from models.fast_streaming import FastBreezeStreamingRuntime, FastStreamingConfig
-from models.warmup_profile import load_warmup_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAST_CONFIG = REPO_ROOT / "configs" / "fast.json"
@@ -43,6 +44,7 @@ class ApiSettings:
     fast_backbone_decode: bool
     fast_depth_decoder: bool
     fast_codec: bool
+    device: str | None = None
 
 
 _settings: ApiSettings | None = None
@@ -73,9 +75,10 @@ async def _save_upload(upload: UploadFile) -> Path:
 
 
 def _load_app(app: FastAPI, settings: ApiSettings) -> None:
+    device = resolve_device(settings.device)
     tokenizer, model, audio_tokenizer = load_runtime(
         settings.model,
-        device=resolve_device(),
+        device=device,
         attn_implementation="eager",
     )
     update_generation_config_for_breeze(model)
@@ -91,9 +94,12 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
         fast_codec=settings.fast_codec,
         repetition_penalty=REPETITION_PENALTY,
     )
-    runtime = FastBreezeStreamingRuntime(
-        model, audio_tokenizer, config, tokenizer=tokenizer
+    runtime_type = (
+        FastBreezeStreamingRuntime
+        if device.startswith("cuda")
+        else EagerBreezeStreamingRuntime
     )
+    runtime = runtime_type(model, audio_tokenizer, config, tokenizer=tokenizer)
     if runtime.fast_enabled:
         profile = load_warmup_profile(FAST_CONFIG)
         profile = replace(profile, codec_chunk_frames=runtime.codec_chunk_frames)
@@ -216,6 +222,7 @@ def main() -> None:
     parser.add_argument("model", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--device", choices=("mps", "cpu"))
     parser.add_argument(
         "--fast-all", action=argparse.BooleanOptionalAction, default=None
     )
@@ -245,6 +252,7 @@ def main() -> None:
         fast_backbone_decode=args.fast_backbone_decode,
         fast_depth_decoder=args.fast_depth_decoder,
         fast_codec=args.fast_codec,
+        device=args.device,
     )
 
     import uvicorn
