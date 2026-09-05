@@ -125,6 +125,7 @@ def test_codec_cleanup_failure_is_not_success_and_prevents_reuse():
 def test_poisoned_runtime_rejects_before_success_headers(monkeypatch):
     engine, lock = configure(monkeypatch, Model(1), Codec())
     engine._poisoned = True
+    assert api.health().status_code == 503
     with pytest.raises(api.HTTPException) as caught:
         asyncio.run(make_response("2.4"))
     assert caught.value.status_code == 503

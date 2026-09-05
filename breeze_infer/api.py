@@ -168,6 +168,8 @@ app = FastAPI(title="Breeze TTS API", lifespan=_lifespan)
 def health() -> JSONResponse:
     if not hasattr(app.state, "runtime"):
         return JSONResponse({"status": "loading"}, status_code=503)
+    if getattr(app.state.runtime, "_poisoned", False):
+        return JSONResponse({"status": "unavailable"}, status_code=503)
     return JSONResponse({"status": "ok", "sample_rate": app.state.runtime.sample_rate})
 
 
