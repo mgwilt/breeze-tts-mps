@@ -12,10 +12,69 @@
 > Source code is licensed under Apache 2.0. Breeze TTS 2 model weights, derivative models, and self-hosted outputs are for research and non-commercial use only. See [License](#license-and-responsible-use).
 
 > [!NOTE]
-> This `mgwilt/breeze-tts-mps` fork preserves the official CUDA path and adds a
-> portable eager PyTorch runtime for Apple Silicon MPS and CPU. Non-CUDA output
-> is generated before it is divided into HTTP response chunks, so this path is
-> functional but not realtime.
+> This is the `mgwilt/breeze-tts-mps` Apple Silicon fork. It preserves BreezeBlue's
+> official CUDA path and adds portable PyTorch execution, incremental codec output,
+> and an experimental MLX generation runtime. BreezeBlue remains the upstream model
+> author; the fork's Apple Silicon work is community-maintained.
+
+## Apple Silicon fork
+
+This fork turns the original CUDA-oriented inference package into a practical local
+research runtime on Apple Silicon. The main additions are:
+
+- portable PyTorch inference on MPS and CPU, with the upstream CUDA behavior retained;
+- stateful codec decoding that emits PCM while generation is still running;
+- cancellation, failure cleanup, immediate retry, and explicit runtime health state;
+- cached depth decoding and batched conditional/unconditional CFG experiments;
+- MLX ports of the backbone, depth decoder, and complete speech-generation loop;
+- affine 8-bit and 4-bit linear-layer candidates with recorded quantization coverage;
+- stage profilers, numerical probes, and Metal-backed regression tests.
+
+The current `mlx-int8-v1` candidate uses PyTorch BF16 for text preparation and MLX for
+quantized backbone/depth generation, followed by the stateful codec. It is deliberately
+identified as experimental: it supports reference-free voice design with CFG 4 and an
+explicit seed, but does not currently support reference-audio cloning or direction.
+Production promotion and perceptual acceptance remain the responsibility of the
+embedding application.
+
+### Measured status
+
+On the development M3 Ultra, the fork's full test suite passes 200 tests with Metal
+available. Simo's fixed HTTPS control and resident-model cohorts measured p95 steady-state
+RTF of 0.685–0.698, with warm service first PCM around 0.28–0.30 seconds in the process
+startup cohort. Those measurements apply only to the recorded `mlx-int8-v1` configuration;
+they are not upstream CUDA benchmarks, physical speaker-onset measurements, or listening
+acceptance.
+
+### Run on a Mac
+
+The portable reference API can be started directly from this repository:
+
+```bash
+python -m breeze_infer.api ../Breeze-TTS-2 \
+  --host 127.0.0.1 --port 7860 --device mps
+```
+
+The experimental MLX recipe is packaged by the sibling
+[Simo](https://github.com/mgwilt/simo) project, which pins this fork as a submodule and
+provides the operator controls, browser playback, benchmarks, and listening-result store:
+
+```bash
+PYTHONPATH=vendor/breeze-tts UV_CACHE_DIR=/private/tmp/simo-uv-cache \
+uv run --offline --project services/breeze --frozen --with mlx==0.32.0 \
+  python services/breeze/serve.py .models/Breeze-TTS-2 \
+  --host 127.0.0.1 --port 7861 --device mps \
+  --experimental-recipe mlx-int8-v1
+```
+
+Run the Metal-backed fork suite from a Simo checkout with its locked service environment:
+
+```bash
+PYTHONPATH=vendor/breeze-tts UV_CACHE_DIR=/private/tmp/simo-uv-cache \
+uv run --offline --project services/breeze --frozen \
+  --with pytest==8.4.2 --with mlx==0.32.0 \
+  python -m pytest vendor/breeze-tts/tests -q
+```
 
 ## 📰 News
 
@@ -176,9 +235,10 @@ python -m breeze_infer.api ../breeze-tts-2 \
 ```
 
 The API automatically selects MPS when CUDA is unavailable, so `--device mps`
-is optional. CUDA graph acceleration and true incremental audio streaming remain
-CUDA-only. Bind the MPS API to loopback unless you provide a separate trusted,
-authenticated network edge.
+is optional. The eager MPS route now uses stateful incremental codec decoding; the
+experimental MLX generation recipe is launched through Simo as described above. CUDA
+graphs remain CUDA-only. Bind either local inference service to loopback unless you
+provide a separate trusted, authenticated network edge.
 
 ### ⚡ Fast Inference Options
 
