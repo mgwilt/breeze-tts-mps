@@ -30,6 +30,7 @@ def test_api_exposes_only_health_and_streaming_speech() -> None:
 
 def test_speech_request_parameters_are_minimal() -> None:
     assert list(inspect.signature(speech).parameters) == [
+        "http_request",
         "text",
         "instruction",
         "cfg_scale",

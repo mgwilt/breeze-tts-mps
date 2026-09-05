@@ -157,7 +157,8 @@ class BreezeGenerationMixin(GenerationMixin):
         """
         Custom depth decoder generation with CFG.
 
-        At each step, we run the depth decoder twice (cond and uncond) and apply CFG to the logits.
+        The reference uses separate full prefixes. The opt-in cached path batches
+        the two CFG branches and advances one codebook position at a time.
         """
         depth_decoder = self.depth_decoder
         generation_config = depth_decoder.generation_config
@@ -174,26 +175,56 @@ class BreezeGenerationMixin(GenerationMixin):
 
         # Initialize sequences with input_ids (which contains placeholder + token0)
         sequences = depth_decoder_input_ids  # [batch_size, 2]
+        cached = getattr(self, "_cached_depth_cfg", False)
+        runner = getattr(self, "_static_depth_runner", None)
+        past_key_values = None
+        positions = torch.arange(num_codebooks, device=device)
+        branch_hidden = (
+            torch.cat([cond_backbone_hidden_state, uncond_backbone_hidden_state], dim=0)
+            if cached else None
+        )
 
         # Generate tokens 1 to num_codebooks-1 (31 tokens for 32 codebooks)
         for step in range(num_codebooks - 1):
-            # Cond forward pass
-            cond_outputs = depth_decoder(
-                input_ids=sequences,
-                backbone_last_hidden_state=cond_backbone_hidden_state,
-                use_cache=False,
-                return_dict=True,
-            )
-            cond_logits = cond_outputs.logits[:, -1, :].float()
-
-            # Uncond forward pass
-            uncond_outputs = depth_decoder(
-                input_ids=sequences,
-                backbone_last_hidden_state=uncond_backbone_hidden_state,
-                use_cache=False,
-                return_dict=True,
-            )
-            uncond_logits = uncond_outputs.logits[:, -1, :].float()
+            if cached:
+                step_ids = sequences if step == 0 else sequences[:, -1:]
+                # The outer head needs explicit positions too. Hidden state is
+                # only the placeholder embedding at prefill, never a later token.
+                if runner is not None:
+                    if batch_size != 1:
+                        raise ValueError("Static depth candidate supports one CFG pair")
+                    paired = torch.cat([step_ids, step_ids], dim=0)
+                    hidden = runner.begin(paired, branch_hidden) if step == 0 else runner.step(paired, step)
+                    logits = nn.functional.linear(hidden, depth_decoder.codebooks_head.weight[step].T)[:, -1, :].float()
+                else:
+                    outputs = depth_decoder(
+                        input_ids=torch.cat([step_ids, step_ids], dim=0),
+                        backbone_last_hidden_state=branch_hidden if step == 0 else None,
+                        past_key_values=past_key_values,
+                        cache_position=positions[:2] if step == 0 else positions[step + 1:step + 2],
+                        use_cache=True,
+                        logits_to_keep=1,
+                        codebook_index=step,
+                        return_dict=True,
+                    )
+                    past_key_values = outputs.past_key_values
+                    logits = outputs.logits[:, -1, :].float()
+                cond_logits, uncond_logits = logits[:batch_size], logits[batch_size:]
+            else:
+                cond_outputs = depth_decoder(
+                    input_ids=sequences,
+                    backbone_last_hidden_state=cond_backbone_hidden_state,
+                    use_cache=False,
+                    return_dict=True,
+                )
+                cond_logits = cond_outputs.logits[:, -1, :].float()
+                uncond_outputs = depth_decoder(
+                    input_ids=sequences,
+                    backbone_last_hidden_state=uncond_backbone_hidden_state,
+                    use_cache=False,
+                    return_dict=True,
+                )
+                uncond_logits = uncond_outputs.logits[:, -1, :].float()
 
             # Apply CFG
             next_token_logits = uncond_logits + cfg_scale * (

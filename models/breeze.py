@@ -551,7 +551,6 @@ class BreezeDepthDecoderModel(BreezePreTrainedModel):
             offset = codebook_idxs * self.vocab_size
             inputs_embeds = self.embed_tokens(input_ids + offset)
 
-            input_ids_are_first_codebook = cache_position[0] == 0
             if backbone_last_hidden_state is not None:
                 if self.backbone_hidden_state_projector is not None:
                     inputs_embeds[:, 0] = self.backbone_hidden_state_projector(
@@ -560,7 +559,11 @@ class BreezeDepthDecoderModel(BreezePreTrainedModel):
                 else:
                     inputs_embeds[:, 0] = backbone_last_hidden_state
             else:
-                if not torch.compiler.is_compiling() and input_ids_are_first_codebook:
+                cached_continuation = (
+                    isinstance(past_key_values, DynamicCache)
+                    and past_key_values.get_seq_length() > 0
+                )
+                if not torch.compiler.is_compiling() and not cached_continuation and cache_position[0] == 0:
                     logger.warning(
                         "When the first codebook token is provided, `backbone_last_hidden_state` should also be provided for correct inference."
                     )
@@ -683,6 +686,7 @@ class BreezeDepthDecoderForCausalLM(BreezePreTrainedModel, GenerationMixin):
         use_cache: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
+        codebook_index: int | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | CausalLMOutputWithPast:
         r"""
@@ -693,6 +697,8 @@ class BreezeDepthDecoderForCausalLM(BreezePreTrainedModel, GenerationMixin):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        codebook_index (`int`, *optional*):
+            Inference-only explicit head index for one cached codebook step; requires logits_to_keep=1.
         """
         outputs = self.model(
             input_ids=input_ids,
@@ -720,10 +726,21 @@ class BreezeDepthDecoderForCausalLM(BreezePreTrainedModel, GenerationMixin):
         loss = None
         logits = None
 
-        logits = self.codebooks_head(
-            hidden_states[:, slice_indices, :],
-            cache_position[slice_indices] if cache_position is not None else None,
-        )
+        if codebook_index is not None:
+            if type(codebook_index) is not int or not 0 <= codebook_index < self.config.num_codebooks - 1:
+                raise ValueError("Invalid codebook_index")
+            if logits_to_keep != 1 or labels is not None:
+                raise ValueError("codebook_index requires inference with logits_to_keep=1")
+            # A Python index selects a view; tensor advanced indexing copies the
+            # complete head matrix on every one-token decode.
+            logits = nn.functional.linear(
+                hidden_states[:, -1:, :], self.codebooks_head.weight[codebook_index].T
+            )
+        else:
+            logits = self.codebooks_head(
+                hidden_states[:, slice_indices, :],
+                cache_position[slice_indices] if cache_position is not None else None,
+            )
         logits = logits.contiguous()
 
         if labels is not None:
