@@ -1,266 +1,178 @@
-<div align="center">
-  <a href="https://breezeblue.ai/"><img src="assets/breezeblue-logo.png" alt="BreezeBlue" width="35%"></a>
-  <br><br>
-  <a href="https://huggingface.co/BreezeBlue/breeze-tts-2"><img src="https://img.shields.io/badge/Hugging%20Face-breeze--tts--2-FFD21E" alt="Hugging Face"></a>
-  <a href="https://breezeblue.ai/breeze-tts-2"><img src="https://img.shields.io/badge/Blog-Breeze%20TTS%202-2563EB" alt="Blog"></a>
-  <a href="https://breezeblue.ai/"><img src="https://img.shields.io/badge/Website-BreezeBlue-0EA5E9" alt="Website"></a>
-  <a href="https://discord.com/invite/6H7AgPe9pA"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://x.com/BreezeBlueX"><img src="https://img.shields.io/badge/X-Follow%20BreezeBlue-000000?logo=x&logoColor=white" alt="X"></a>
-</div>
+# Breeze TTS on Apple Silicon
 
-> [!IMPORTANT]
-> Source code is licensed under Apache 2.0. Breeze TTS 2 model weights, derivative models, and self-hosted outputs are for research and non-commercial use only. See [License](#license-and-responsible-use).
+MPS inference, incremental PCM streaming, and experimental MLX int8 decoding for
+[Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2).
 
-> [!NOTE]
-> This is the `mgwilt/breeze-tts-mps` Apple Silicon fork. It preserves BreezeBlue's
-> official CUDA path and adds portable PyTorch execution, incremental codec output,
-> and an experimental MLX generation runtime. BreezeBlue remains the upstream model
-> author; the fork's Apple Silicon work is community-maintained.
+## Install
 
-## Apple Silicon fork
-
-This fork turns the original CUDA-oriented inference package into a practical local
-research runtime on Apple Silicon. The main additions are:
-
-- portable PyTorch inference on MPS and CPU, with the upstream CUDA behavior retained;
-- stateful codec decoding that emits PCM while generation is still running;
-- cancellation, failure cleanup, immediate retry, and explicit runtime health state;
-- cached depth decoding and batched conditional/unconditional CFG experiments;
-- MLX ports of the backbone, depth decoder, and complete speech-generation loop;
-- affine 8-bit and 4-bit linear-layer candidates with recorded quantization coverage;
-- stage profilers, numerical probes, and Metal-backed regression tests.
-
-The current `mlx-int8-v1` candidate uses PyTorch BF16 for text preparation and MLX for
-quantized backbone/depth generation, followed by the stateful codec. It is deliberately
-identified as experimental: it supports reference-free voice design with CFG 4 and an
-explicit seed, but does not currently support reference-audio cloning or direction.
-Production promotion and perceptual acceptance remain the responsibility of the
-embedding application.
-
-### Measured status
-
-On the development M3 Ultra, the fork's full test suite passes 200 tests with Metal
-available. Simo's fixed HTTPS control and resident-model cohorts measured p95 steady-state
-RTF of 0.685–0.698, with warm service first PCM around 0.28–0.30 seconds in the process
-startup cohort. Those measurements apply only to the recorded `mlx-int8-v1` configuration;
-they are not upstream CUDA benchmarks, physical speaker-onset measurements, or listening
-acceptance.
-
-### Run on a Mac
-
-The portable reference API can be started directly from this repository:
+Apple Silicon Mac, native arm64 Python 3.11–3.13, and an MPS-enabled PyTorch build.
+Run commands from the repository root in the activated environment.
 
 ```bash
-python -m breeze_infer.api ../Breeze-TTS-2 \
-  --host 127.0.0.1 --port 7860 --device mps
-```
-
-The experimental MLX recipe is packaged by the sibling
-[Simo](https://github.com/mgwilt/simo) project, which pins this fork as a submodule and
-provides the operator controls, browser playback, benchmarks, and listening-result store:
-
-```bash
-PYTHONPATH=vendor/breeze-tts UV_CACHE_DIR=/private/tmp/simo-uv-cache \
-uv run --offline --project services/breeze --frozen --with mlx==0.32.0 \
-  python services/breeze/serve.py .models/Breeze-TTS-2 \
-  --host 127.0.0.1 --port 7861 --device mps \
-  --experimental-recipe mlx-int8-v1
-```
-
-Run the Metal-backed fork suite from a Simo checkout with its locked service environment:
-
-```bash
-PYTHONPATH=vendor/breeze-tts UV_CACHE_DIR=/private/tmp/simo-uv-cache \
-uv run --offline --project services/breeze --frozen \
-  --with pytest==8.4.2 --with mlx==0.32.0 \
-  python -m pytest vendor/breeze-tts/tests -q
-```
-
-## 📰 News
-
-- **[2026.08.25]** 🎉 We open-source [Breeze TTS 2](https://huggingface.co/BreezeBlue/breeze-tts-2) model weights and the [PyTorch inference code](https://github.com/breezeblue-ai/breeze-tts).
-- **[2026.08.07]** 🔥 We release the TTS benchmark suite for [voice design](https://github.com/breezeblue-ai/tts-voice-design-benchmark), [voice direction](https://github.com/breezeblue-ai/TTS-Voice-Direction-Benchmark), and [latency evaluation](https://github.com/breezeblue-ai/TTS-Latency-Benchmark).
-
-## 📖 Introduction
-
-Breeze TTS 2 is an open-weight text-to-speech model built for real-time interaction. It ranks #1 among open-weight models on the Artificial Analysis TTS leaderboard, while outperforming frontier proprietary systems. Its open-ended natural-language instruction-following capability supports reference-free voice design and reference-guided voice direction, while ultra-low-latency streaming enables responsive, expressive interaction.
-
-<div align="center">
-  <img src="assets/tts-elo-leaderboard.svg" alt="Text-to-speech models ranked by Artificial Analysis Elo score" width="100%">
-</div>
-
-## ✨ Highlights
-
-- 🎙️ **Voice Clone** — Uses reference audio with its exact transcript to preserve timbre, rhythm, emotion, and style.
-- 🎨 **Voice Design** — Creates a distinctive voice from a natural-language description, without reference audio.
-- 🎛️ **Voice Direction** — Clones a voice from reference audio while steering tone, emotion, pace, and delivery.
-- 🎭 **Vocal Events** — Adds expressive inline events directly in the text: use parentheses in English, such as `(laugh)`, `(cough)`, `(clears throat)`, and `(sigh)`; use square brackets in Chinese, such as `[笑]`, `[咳嗽]`, `[清嗓子]`, and `[叹气]`.
-- ⚡ **Ultra-Low Latency** — Achieves under 40 ms time to first audio (TTFA) with the warmed-up fast path on an NVIDIA H100.
-- 🌊 **Real-Time Streaming** — Reaches a 0.32 real-time factor (RTF), generating audio at approximately 3.1× real time with the warmed-up fast path on an NVIDIA H100.
-- 💾 **GPU-Efficient** — Eager inference uses approximately 7.7 GiB of GPU memory; a 12 GB GPU is the minimum recommended configuration.
-- 🌏 **Bilingual Support** — Generates natural English and Chinese speech with a single model.
-
-## 🚀 Quick Start
-
-### Requirements
-
-- Linux and Python 3.10 or newer
-- A CUDA-capable NVIDIA GPU
-- GPU memory: approximately 7.7 GiB for eager inference or 14.4 GiB with `--fast-all`; use a 12 GB GPU for eager or a 24 GB GPU for the fast path
-- The Breeze TTS 2 checkpoint
-
-### Installation
-
-Download the inference code:
-
-```bash
-git clone https://github.com/breezeblue-ai/breeze-tts.git
-cd breeze-tts
-```
-
-Install the dependencies:
-
-```bash
+git clone https://github.com/mgwilt/breeze-tts-mps.git
+cd breeze-tts-mps
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
+python -c "import torch; assert torch.backends.mps.is_available(), 'MPS unavailable'"
 ```
 
-All required model components are included in the Breeze TTS 2 checkpoint.
+Download the complete [model checkpoint](https://huggingface.co/BreezeBlue/Breeze-TTS-2/tree/main)
+to `models/Breeze-TTS-2`, or substitute its path below.
 
-For the tested CUDA environment, build the included Docker image:
+| Dependency | Version |
+| --- | --- |
+| PyTorch / torchaudio | 2.9.1 |
+| Transformers | 4.57.3 |
+| Qwen codec package (`qwen-tts`) | 0.1.1 |
+| MLX / MLX Metal, optional | 0.32.0 |
+
+## Serve with MPS
 
 ```bash
-bash docker/build.sh
+python -m breeze_infer.api models/Breeze-TTS-2 \
+  --device mps --host 127.0.0.1 --port 7860
 ```
 
-The default image targets H100/Hopper (sm90). For A100:
+In another terminal:
 
 ```bash
-FLASH_ATTN_CUDA_ARCHS=80 bash docker/build.sh
+curl --fail http://127.0.0.1:7860/health
+
+curl --fail --no-buffer http://127.0.0.1:7860/v1/audio/speech \
+  -F 'text=Welcome aboard. Your journey begins now.' \
+  -F 'instruction=A warm, clear voice with calm, thoughtful delivery.' \
+  -F 'cfg_scale=4' \
+  -F 'seed=42' \
+  --output speech.pcm
 ```
 
-### 🎙️ Voice Clone
+| API behavior | Contract |
+| --- | --- |
+| Output | Raw mono PCM, 24 kHz, signed 16-bit little-endian; not WAV |
+| Streaming | Incremental chunks while generation runs |
+| Concurrency | One synthesis request; overlapping requests return HTTP 409 |
+| Cancellation | Client disconnect cancels generation; cleanup precedes lock release |
+| Input bounds | Nonempty text ≤4,000 characters; nonempty instruction ≤2,000; token-capacity checks also apply |
+| Reference audio, MPS | Supply both `ref_audio=@reference.wav` and its exact `ref_text` transcript |
 
-Clone a speaker from clean reference audio and its exact transcript.
+Keep inference on loopback. Network exposure requires a separate authenticated TLS edge.
 
-#### English
+## Serve with experimental MLX int8
 
 ```bash
-python infer.py ../breeze-tts-2 \
-  --ref-audio reference_en.wav \
-  --ref-text "This is the exact transcript of the English reference audio." \
-  --text "(sigh) It is good to hear your voice again after all this time." \
-  --output outputs/voice_clone_en.wav
+python -m pip install mlx==0.32.0 mlx-metal==0.32.0
 ```
 
-#### Chinese
+Stop the MPS process before reusing its port. Recipe selection currently uses the internal
+Python configuration seam; the API CLI does **not** expose an MLX flag.
 
 ```bash
-python infer.py ../breeze-tts-2 \
-  --ref-audio reference_zh.wav \
-  --ref-text "这是中文参考音频的准确文字稿。" \
-  --text "[叹气] 没想到过了这么久，你还记得我的声音。" \
-  --output outputs/voice_clone_zh.wav
+python - <<'PY'
+from pathlib import Path
+import uvicorn
+from breeze_infer import api
+
+api._settings = api.ApiSettings(
+    model=Path("models/Breeze-TTS-2"),
+    device="mps",
+    experimental_recipe="mlx-int8-v1",
+    fast_all=False,
+    fast_text_encoder=False,
+    fast_backbone_prefill=False,
+    fast_backbone_decode=False,
+    fast_depth_decoder=False,
+    fast_codec=False,
+)
+uvicorn.run(api.app, host="127.0.0.1", port=7860)
+PY
 ```
 
-Reference audio should contain clean speech with minimal background noise.
+Use the same request above. Requirements: CFG **4**, a uint32 seed, and instruction-only
+voice design. Reference-audio cloning/direction is not supported by this recipe.
+Dependency versions and Metal kernel hashes are checked by
+[`experimental.py`](breeze_infer/experimental.py).
 
-### 🎨 Voice Design
+`--fast-all` and the individual `--fast-*` flags control upstream **CUDA** optimizations,
+not Apple Silicon acceleration. MLX sampling is not Torch-seed equivalent; int8 remains
+experimental, not perceptually release-accepted.
 
-Create a voice from a natural-language description without reference audio. Match the instruction language to the target text. Use `--cfg-scale 4` to strengthen instruction-following.
+## What this fork changes
 
-#### English
+| Component | Apple Silicon implementation |
+| --- | --- |
+| Runtime | Portable PyTorch MPS/CPU path; CUDA path retained |
+| Streaming codec | Stateful incremental decoding, bounded producer queue, cancellation and failure cleanup |
+| PyTorch depth decoding | Cached prefixes and batched conditional/unconditional CFG |
+| MLX generation | Backbone and depth decoder ports; compiled decode steps, SDPA, branch-isolated KV caches |
+| Hybrid boundary | PyTorch BF16 text preparation/prefill → MLX generation → PyTorch FP32 codec |
+| Int8 recipe | Affine weight-only quantization, group size 64; 196 backbone + 84 depth linear weights |
+| Unquantized components | Embeddings, norms, projectors, custom/output heads, codec; BF16 MLX activations and KV |
+| Memory scope | Original Torch weights remain resident; this is not an end-to-end MLX rewrite |
+
+## Tests
 
 ```bash
-python infer.py ../breeze-tts-2 \
-  --text "(sigh) Welcome aboard. Your journey begins now." \
-  --instruction "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
-  --cfg-scale 4 \
-  --output outputs/voice_design_en.wav
+python -m pytest tests -q
 ```
 
-#### Chinese
+Install the optional MLX dependencies to exercise MLX tests on Metal. Tests cover cached
+decoding, CFG isolation, sampling, codec boundaries, cancellation, and failure recovery.
+Mac results do not establish CUDA correctness or perceptual equivalence.
 
-```bash
-python infer.py ../breeze-tts-2 \
-  --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
-  --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。" \
-  --cfg-scale 4 \
-  --output outputs/voice_design_zh.wav
-```
+## Recorded performance
 
-### 🎛️ Voice Direction
+Apple M3 Ultra, 512 GiB unified memory; September 2026. Checkpoint revision
+`799624c0b4a1daa8db6d28bbd9850043c0270734`; dependency versions listed above.
+Warm, uncached synthesis at CFG 4, temperature 0.9, top-k 50, top-p 1.0.
 
-Keep the identity of a reference speaker while directing tone, emotion, pace, and delivery. Use `--cfg-scale 4` to strengthen instruction-following.
+### Implementation progression
 
-```bash
-python infer.py ../breeze-tts-2 \
-  --ref-audio reference.wav \
-  --ref-text "This is the exact transcript of the reference audio." \
-  --text "(clears throat) We need to discuss what happened last night." \
-  --instruction "Speak slowly with a restrained, serious tone." \
-  --cfg-scale 4 \
-  --output outputs/voice_direction.wav
-```
+| Implementation | Timed / warmups | p95 total RTF | p95 first PCM |
+| --- | ---: | ---: | ---: |
+| Original buffered MPS reference | 10 / 3 | 9.954 | 49.165 s |
+| Cached depth + incremental codec | 3 / 1 | 7.013 | 0.809 s |
+| MPS SDPA + direct output-head indexing | 30 / 3 | 3.442 | 0.665 s |
+| MLX int8 backbone + depth | 30 / 3 | 0.799 | 0.393 s |
 
-### 🌐 Streaming API
+Historical cohorts, **not a controlled speedup ablation**: sample counts, generated
+durations, execution and first-PCM observation boundaries differ. The first two runs
+have no recorded wall-clock date; order denotes implementation milestones. SDPA and MLX
+share ten prompts × three seeds, but use different RNG streams. The reference emits PCM
+only after completion; its first-PCM reduction includes incremental delivery.
 
-Start the single-concurrency streaming API. It uses the same PyTorch runtime and eager execution by default:
+### Matched MLX weight-precision study
 
-```bash
-python -m breeze_infer.api ../breeze-tts-2 --host 0.0.0.0 --port 7860
-```
+Same 18 prompt/instruction/seed cases and three warmups per arm; no CFG reduction.
 
-Send a Voice Direction request with reference audio and CFG 4:
+| Backbone / depth weights | p95 steady RTF | p95 first PCM | ASR word edits / 189 |
+| --- | ---: | ---: | ---: |
+| BF16 / BF16 | 1.088 | 0.431 s | 3 |
+| Int8 / BF16 | 1.008 | 0.422 s | 5 |
+| BF16 / Int8 | 0.770 | 0.400 s | 6 |
+| Int8 / Int8 | 0.688 | 0.390 s | 7 |
 
-```bash
-curl -X POST http://127.0.0.1:7860/v1/audio/speech \
-  -F "cfg_scale=4" \
-  -F "ref_audio=@reference.wav" \
-  -F "ref_text=This is the exact transcript of the reference audio." \
-  -F "text=(clears throat) We need to discuss what happened last night." \
-  -F "instruction=Speak slowly with a restrained, serious tone." \
-  -F "seed=42" \
-  --output voice_direction.pcm
-```
+Both-int8 reduces p95 steady RTF **36.7%** versus BF16 weights. Selected linear-weight
+storage, including scales/biases: **3,485,466,624 → 1,851,654,144 bytes (−46.875%)**.
+This is not total model size or peak process memory.
 
-The response is streaming mono 24 kHz signed 16-bit little-endian PCM. Start the API with `--fast-all` to enable the fast path.
+- Total RTF = request wall time / generated audio duration; **<1 is faster than real time**.
+- Steady RTF excludes time and audio through the first chunk. p95 uses nearest rank,
+  excluding warmups; at n=18 it is the maximum.
+- Output durations differ even in the matched study. ASR edits are unadjudicated
+  recognizer flags, not listening scores or proof of equal quality.
+- First PCM is not browser or acoustic playback latency. Smaller Macs and
+  concurrent-model inference are not characterized by these measurements.
+- These are retained historical measurements, not a benchmark rerun of the current
+  checkout. Raw benchmark receipts and audio are not bundled in this repository.
 
-#### Apple Silicon MPS
+## Upstream and license
 
-On a Mac with an MPS-enabled PyTorch build, start the portable eager API with:
+Based on [BreezeBlue's Breeze TTS](https://github.com/breezeblue-ai/breeze-tts).
+BreezeBlue authors the model; this community fork maintains the Apple Silicon changes.
+The audio tokenizer is based on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS).
 
-```bash
-python -m breeze_infer.api ../breeze-tts-2 \
-  --host 127.0.0.1 --port 7860 --device mps
-```
-
-The API automatically selects MPS when CUDA is unavailable, so `--device mps`
-is optional. The eager MPS route now uses stateful incremental codec decoding; the
-experimental MLX generation recipe is launched through Simo as described above. CUDA
-graphs remain CUDA-only. Bind either local inference service to loopback unless you
-provide a separate trusted, authenticated network edge.
-
-### ⚡ Fast Inference Options
-
-Both the CLI and API use eager streaming by default and skip graph warmup. Pass `--fast-all` to enable the best configuration for every inference stage when the additional cold-start time is acceptable. Each stage can also be controlled independently:
-
-| Stage | Fast parameter | Disabled | Enabled |
-| --- | --- | --- | --- |
-| Text encoder | `--[no-]fast-text-encoder` | Native eager forward | Static CUDA Graph selected by CFG shape and text-length bucket |
-| Backbone prefill | `--[no-]fast-backbone-prefill` | Native eager prefill | CUDA Graph selected by CFG shape and prompt-length bucket |
-| Backbone decode | `--[no-]fast-backbone-decode` | Native eager token step | StaticCache-backed graph selected by CFG shape |
-| Depth decoder | `--[no-]fast-depth-decoder` | Native eager depth loop | Full-graph compilation with CFG-shape CUDA Graphs |
-| Codec | `--[no-]fast-codec` | Eager streaming decode | Single-request streaming CUDA Graph with one-frame chunks |
-
-Individual stage flags are intended for profiling and debugging.
-
-
-## License and Responsible Use
-
-The source code is licensed under the [Apache License, Version 2.0](https://github.com/breezeblue-ai/breeze-tts/blob/main/LICENSE). The audio tokenizer is based on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by the Alibaba Qwen Team and is licensed under the Apache License, Version 2.0. Model weights, checkpoints, adapters, derivative models, and self-hosted outputs are governed separately by the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE). The Apache License does not grant rights to use the model commercially.
-
-If you have an active paid subscription, outputs you generate through BreezeBlue's hosted platform or API at [breezeblue.ai](https://breezeblue.ai/) can be used commercially, subject to our [Terms of Service](https://breezeblue.ai/legal/terms). A paid subscription does not grant commercial rights to the open-weight model or self-hosted outputs.
-
-You are responsible for complying with applicable laws and obtaining all necessary rights and consents for inputs, reference audio, voices, and outputs. Unauthorized voice cloning, impersonation, fraud, and other unlawful or harmful uses are prohibited.
-
-The code and Model Materials are provided "AS IS," without warranties or liability to the maximum extent permitted by law. Third-party components remain subject to their respective licenses.
+Source: [Apache 2.0](LICENSE). Model weights, derivatives, and self-hosted outputs:
+[BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE).
+The code license does not grant commercial model rights. Obtain consent and rights for
+reference voices; unauthorized cloning, impersonation, and fraud are prohibited.
