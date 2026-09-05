@@ -54,6 +54,8 @@ class ApiSettings:
     quantization: str = "none"
     runtime_fingerprint: str = ""
     depth_cache: str = "dynamic"
+    experimental_recipe: str | None = None
+    runtime_identity: dict | None = None
 
 
 _settings: ApiSettings | None = None
@@ -104,6 +106,11 @@ async def _save_upload(upload: UploadFile) -> Path:
 def _load_app(app: FastAPI, settings: ApiSettings) -> None:
     started = time.perf_counter()
     device = resolve_device(settings.device)
+    if settings.experimental_recipe is not None:
+        from breeze_infer.experimental import dependency_identity, validate_settings
+
+        validate_settings(settings, device)
+        dependency_identity()
     tokenizer, model, audio_tokenizer = load_runtime(
         settings.model,
         device=device,
@@ -115,13 +122,20 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
         if settings.engine != "streaming" or settings.quantization != "none":
             raise ValueError("Static/compiled depth candidates require unquantized streaming")
         from models.static_depth import StaticDepthRunner
-        model._static_depth_runner = StaticDepthRunner(model.depth_decoder.model, compile_decode=settings.depth_cache == "compiled")
+
+        model._static_depth_runner = StaticDepthRunner(
+            model.depth_decoder.model, compile_decode=settings.depth_cache == "compiled"
+        )
         compile_started = time.perf_counter()
         model._static_depth_runner.warmup()
         app.state.depth_warmup_s = time.perf_counter() - compile_started
     if settings.quantization != "none":
         from breeze_infer.quantization import quantize_model
-        app.state.quantization = quantize_model(model, bits=int(settings.quantization[-1]) if settings.quantization == "int8" else 4)
+
+        app.state.quantization = quantize_model(
+            model,
+            bits=int(settings.quantization[-1]) if settings.quantization == "int8" else 4,
+        )
 
     config = FastStreamingConfig(
         max_new_tokens=MAX_NEW_TOKENS,
@@ -137,9 +151,19 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
     runtime_type = (
         FastBreezeStreamingRuntime
         if device.startswith("cuda")
-        else (PortableBreezeStreamingRuntime if settings.engine == "streaming" else EagerBreezeStreamingRuntime)
+        else (
+            PortableBreezeStreamingRuntime
+            if settings.engine == "streaming"
+            else EagerBreezeStreamingRuntime
+        )
     )
-    runtime = runtime_type(model, audio_tokenizer, config, tokenizer=tokenizer)
+    runtime_model = model
+    metadata = None
+    if settings.experimental_recipe is not None:
+        from breeze_infer.experimental import load_candidate
+
+        runtime_model, metadata = load_candidate(model, audio_tokenizer)
+    runtime = runtime_type(runtime_model, audio_tokenizer, config, tokenizer=tokenizer)
     if runtime.fast_enabled:
         profile = load_warmup_profile(FAST_CONFIG)
         profile = replace(profile, codec_chunk_frames=runtime.codec_chunk_frames)
@@ -150,6 +174,13 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
     app.state.model = model
     app.state.audio_tokenizer = audio_tokenizer
     app.state.runtime = runtime
+    app.state.runtime_fingerprint = settings.runtime_fingerprint
+    app.state.runtime_identity = settings.runtime_identity
+    if metadata is not None:
+        from breeze_infer.experimental import resolved_identity
+
+        app.state.runtime_identity = resolved_identity(settings.runtime_identity or {}, metadata)
+        app.state.runtime_fingerprint = app.state.runtime_identity["runtime_fingerprint"]
     app.state.load_s = time.perf_counter() - started
 
 
@@ -184,9 +215,7 @@ async def speech(
     seed: int = Form(42),
 ) -> StreamingResponse:
     if not _request_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409, detail="An inference request is already running."
-        )
+        raise HTTPException(status_code=409, detail="An inference request is already running.")
 
     reference_path: Path | None = None
     cancelled = threading.Event()
@@ -206,17 +235,37 @@ async def speech(
         if getattr(app.state.runtime, "_poisoned", False):
             raise HTTPException(status_code=503, detail="Codec cleanup failed; restart Breeze.")
         expected = http_request.headers.get("X-Breeze-Runtime")
-        fingerprint = _settings.runtime_fingerprint if _settings is not None else ""
+        fingerprint = getattr(app.state, "runtime_fingerprint", None)
+        if fingerprint is None:
+            fingerprint = _settings.runtime_fingerprint if _settings is not None else ""
         if expected and expected != fingerprint:
             raise HTTPException(status_code=409, detail="Breeze runtime changed; refresh health.")
-        if not text.strip() or not instruction.strip() or len(text) > 4000 or len(instruction) > 2000:
-            raise HTTPException(status_code=400, detail="Text/instruction must be non-empty and within input bounds.")
-        if not np.isfinite(cfg_scale) or cfg_scale <= 0:
+        if (
+            not text.strip()
+            or not instruction.strip()
+            or len(text) > 4000
+            or len(instruction) > 2000
+        ):
             raise HTTPException(
-                status_code=400, detail="cfg_scale must be greater than 0."
+                status_code=400,
+                detail="Text/instruction must be non-empty and within input bounds.",
             )
+        if not np.isfinite(cfg_scale) or cfg_scale <= 0:
+            raise HTTPException(status_code=400, detail="cfg_scale must be greater than 0.")
         ref_text = ref_text.strip()
         has_reference = ref_audio is not None and bool(ref_audio.filename)
+        experimental = getattr(_settings, "experimental_recipe", None) is not None
+        if experimental:
+            from breeze_infer.experimental import validate_request
+
+            try:
+                validate_request(
+                    cfg_scale,
+                    seed,
+                    has_reference=ref_audio is not None or bool(ref_text),
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
         if has_reference != bool(ref_text):
             raise HTTPException(
                 status_code=400,
@@ -251,8 +300,16 @@ async def speech(
             guidance_scale_ins=None,
         )
         preparation_s = time.perf_counter() - prepared_at
-        if inputs["input_ids"].shape[1] > MAX_SEQ_LEN - 750:
-            raise HTTPException(status_code=400, detail="Prompt exceeds supported sequence capacity.")
+        if experimental:
+            try:
+                app.state.runtime.model.validate_inputs(inputs)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            inputs["mlx_seed"] = seed
+        elif inputs["input_ids"].shape[1] > MAX_SEQ_LEN - 750:
+            raise HTTPException(
+                status_code=400, detail="Prompt exceeds supported sequence capacity."
+            )
     except BaseException:
         cleanup()
         raise
@@ -312,19 +369,13 @@ async def speech(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Serve Breeze TTS 2 streaming inference"
-    )
+    parser = argparse.ArgumentParser(description="Serve Breeze TTS 2 streaming inference")
     parser.add_argument("model", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--device", choices=("mps", "cpu"))
-    parser.add_argument(
-        "--fast-all", action=argparse.BooleanOptionalAction, default=None
-    )
-    parser.add_argument(
-        "--fast-text-encoder", action=argparse.BooleanOptionalAction, default=False
-    )
+    parser.add_argument("--fast-all", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--fast-text-encoder", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--fast-backbone-prefill", action=argparse.BooleanOptionalAction, default=False
     )
@@ -334,9 +385,7 @@ def main() -> None:
     parser.add_argument(
         "--fast-depth-decoder", action=argparse.BooleanOptionalAction, default=False
     )
-    parser.add_argument(
-        "--fast-codec", action=argparse.BooleanOptionalAction, default=False
-    )
+    parser.add_argument("--fast-codec", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
 
     global _settings
